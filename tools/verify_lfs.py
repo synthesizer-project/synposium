@@ -18,6 +18,19 @@ BINARY_EXTENSIONS = {
 
 
 def main() -> int:
+    errors: list[str] = []
+    try:
+        subprocess.run(
+            ["git", "lfs", "version"], cwd=ROOT, capture_output=True, check=True
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("ERROR: Git LFS is not installed")
+        return 1
+
+    hook = ROOT / ".git" / "hooks" / "pre-push"
+    if not hook.is_file() or not hook.stat().st_mode & 0o111:
+        errors.append("Git LFS pre-push hook is not installed; run git lfs install --local")
+
     files = sorted(
         path.relative_to(ROOT)
         for directory in (ROOT / "assets", ROOT / "slides")
@@ -40,10 +53,36 @@ def main() -> int:
         line.rsplit(": filter: ", 1)[0]: line.rsplit(": filter: ", 1)[1]
         for line in result.stdout.splitlines()
     }
-    errors = [path for path in files if filters.get(str(path)) != "lfs"]
+    errors.extend(
+        f"not covered by Git LFS: {path}"
+        for path in files
+        if filters.get(str(path)) != "lfs"
+    )
 
-    for path in errors:
-        print(f"ERROR: not covered by Git LFS: {path}")
+    tracked = subprocess.run(
+        ["git", "lfs", "ls-files", "--name-only"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    indexed = {
+        str(path)
+        for path in files
+        if subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(path)],
+            cwd=ROOT,
+            capture_output=True,
+        ).returncode
+        == 0
+    }
+    errors.extend(
+        f"tracked binary is not an LFS pointer: {path}"
+        for path in sorted(indexed - set(tracked))
+    )
+
+    for error in errors:
+        print(f"ERROR: {error}")
     print(f"Checked {len(files)} binaries; {len(errors)} error(s).")
     return bool(errors)
 
